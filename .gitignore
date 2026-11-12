@@ -1,0 +1,31 @@
+# Household data: receipts, photos, and the database never go in git.
+/data/
+/var/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.xlsx
+
+# Local configuration and local-only notes (household specifics; the repo is public)
+.env
+*.local.md
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# OS / editors
+.DS_Store

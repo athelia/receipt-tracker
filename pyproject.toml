@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "receipt-tracker"
+version = "0.1.0"
+description = "Local household receipt ingestion and item-level grocery price tracking"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "typer",
+    "pydantic-settings",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "httpx2",
+    "ruff",
+    "pip-tools",
+]
+
+[project.scripts]
+receipt-tracker = "receipt_tracker.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/receipt_tracker"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
