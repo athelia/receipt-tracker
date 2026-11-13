@@ -12,6 +12,7 @@ dependencies = [
     "uvicorn",
     "typer",
     "pydantic-settings",
+    "openpyxl",
 ]
 
 [project.optional-dependencies]
@@ -37,3 +38,7 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Typer declares CLI parameters as call expressions in argument defaults.
+extend-immutable-calls = ["typer.Argument", "typer.Option"]
