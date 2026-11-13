@@ -72,6 +72,61 @@ def import_golden(
 
 
 @app.command()
+def ingest() -> None:
+    """Move ready photos from the watched folder into the archive and queue them."""
+    from receipt_tracker import db
+    from receipt_tracker import ingest as ingest_module
+
+    settings = get_settings()
+    conn = db.connect(settings.db_path)
+    try:
+        db.migrate(conn)
+        report = ingest_module.scan(
+            conn,
+            settings.watch_dir,
+            settings.archive_dir,
+            settle_seconds=settings.watch_settle_seconds,
+        )
+    finally:
+        conn.close()
+    for line in report.lines():
+        typer.echo(line)
+    if not report.lines():
+        typer.echo(f"{settings.watch_dir}: nothing to ingest")
+
+
+@app.command()
+def watch(
+    interval: float | None = typer.Option(
+        None, min=0.1, help="Seconds between scans. Defaults to WATCH_INTERVAL_SECONDS."
+    ),
+) -> None:
+    """Keep ingesting photos as they arrive in the watched folder. Stop with Ctrl-C."""
+    from receipt_tracker import db
+    from receipt_tracker import ingest as ingest_module
+
+    settings = get_settings()
+    conn = db.connect(settings.db_path)
+    try:
+        db.migrate(conn)
+        typer.echo(f"Watching {settings.watch_dir}")
+        ingest_module.watch(
+            lambda: ingest_module.scan(
+                conn,
+                settings.watch_dir,
+                settings.archive_dir,
+                settle_seconds=settings.watch_settle_seconds,
+            ),
+            typer.echo,
+            interval=interval or settings.watch_interval_seconds,
+        )
+    except KeyboardInterrupt:
+        typer.echo("Stopped")
+    finally:
+        conn.close()
+
+
+@app.command()
 def serve(
     host: str | None = typer.Option(None, help="Address to bind. Defaults to the HOST setting."),
     port: int | None = typer.Option(None, help="Port to bind. Defaults to the PORT setting."),
