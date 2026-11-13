@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     db_path: Path | None = None
     watch_dir: Path | None = None
     archive_dir: Path | None = None
+    # How often `watch` looks for new photos.
+    watch_interval_seconds: float = 10.0
+    # A photo is picked up once it has gone this long without being modified.
+    watch_settle_seconds: float = 5.0
     model_server_url: str = "http://localhost:11434"
     host: str = "127.0.0.1"
     port: int = 8000

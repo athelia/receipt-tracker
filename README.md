@@ -43,8 +43,27 @@ Settings come from environment variables prefixed `RECEIPT_TRACKER_`, or from a 
 | `DB_PATH` | `<DATA_DIR>/receipt_tracker.db` | SQLite database |
 | `WATCH_DIR` | `<DATA_DIR>/inbox` | Folder watched for new receipt photos |
 | `ARCHIVE_DIR` | `<DATA_DIR>/archive` | Managed archive of original photos |
+| `WATCH_INTERVAL_SECONDS` | `10` | How often `watch` scans the folder |
+| `WATCH_SETTLE_SECONDS` | `5` | How long a photo must sit unmodified before pickup |
 | `MODEL_SERVER_URL` | `http://localhost:11434` | Local model server (Ollama) |
 | `HOST`, `PORT` | `127.0.0.1`, `8000` | Web app bind address |
+
+## Adding receipt photos
+
+Put photos in `WATCH_DIR`, then either run one pass or leave the watcher running:
+
+```bash
+.venv/bin/receipt-tracker ingest   # one pass
+.venv/bin/receipt-tracker watch    # keep scanning; Ctrl-C to stop
+```
+
+Each photo is copied into `ARCHIVE_DIR` (as `YYYY/MM/<sha256>.<ext>`), given a receipt and a queued extraction job, and then removed from the watched folder.
+
+- **Formats:** JPEG, PNG, HEIC/HEIF, and WebP. Originals are archived unchanged. Anything else is left in place and reported.
+- **Duplicates:** a photo whose content is already archived is removed from the watched folder and nothing new is created.
+- **Long receipts:** name the photos `<anything>-1.jpg`, `<anything>-2.jpg` (up to `-9`) and they become one receipt, in that order, as long as they arrive before extraction starts.
+- **Half-copied files:** a file modified in the last `WATCH_SETTLE_SECONDS` is left for the next scan.
+- Subfolders and hidden files are ignored.
 
 ## Importing the golden workbook
 
