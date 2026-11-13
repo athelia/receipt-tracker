@@ -21,6 +21,18 @@ make lock      # regenerate requirements*.txt after editing pyproject.toml
 
 The CLI is `.venv/bin/receipt-tracker`; run it with `--help` to list commands.
 
+## Database
+
+SQLite, at `DB_PATH`. Create or upgrade the schema with:
+
+```bash
+.venv/bin/receipt-tracker migrate
+```
+
+Schema changes are numbered SQL files in `src/receipt_tracker/db/migrations/` (`NNNN_description.sql`). Each is applied once, in order, in its own transaction. Never edit a migration that has been merged; add a new one.
+
+Storage conventions: money is integer cents (`*_cents`), quantities are integer thousandths (`quantity_milli`), percentage discounts are integer basis points (`discount_bp`), and timestamps are UTC ISO-8601 text.
+
 ## Configuration
 
 Settings come from environment variables prefixed `RECEIPT_TRACKER_`, or from a `.env` file in the working directory. Copy [.env.example](.env.example) to `.env` to start. `receipt-tracker config` prints the values in effect.
