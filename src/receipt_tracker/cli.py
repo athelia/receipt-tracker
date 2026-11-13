@@ -1,5 +1,7 @@
 """Command-line interface."""
 
+from pathlib import Path
+
 import typer
 
 from receipt_tracker import __version__
@@ -39,6 +41,34 @@ def migrate() -> None:
         typer.echo(f"{settings.db_path}: schema is up to date")
     for migration in applied:
         typer.echo(f"{settings.db_path}: applied {migration.version:04d} {migration.name}")
+
+
+@app.command("import-golden")
+def import_golden(
+    workbook: Path = typer.Argument(..., exists=True, dir_okay=False, help="The .xlsx workbook."),
+    lookup_store: str | None = typer.Option(
+        None, help="Store the lookup sheet's item codes belong to. Inferred when omitted."
+    ),
+    dry_run: bool = typer.Option(False, help="Report what would be imported; save nothing."),
+) -> None:
+    """Import the hand-entered golden workbook as reviewed data."""
+    from receipt_tracker import db, golden_import
+
+    settings = get_settings()
+    conn = db.connect(settings.db_path)
+    try:
+        db.migrate(conn)
+        try:
+            report = golden_import.import_golden(
+                conn, workbook, lookup_store=lookup_store, dry_run=dry_run
+            )
+        except golden_import.WorkbookError as error:
+            typer.echo(f"Cannot import {workbook}: {error}", err=True)
+            raise typer.Exit(1) from error
+    finally:
+        conn.close()
+    for line in report.lines():
+        typer.echo(line)
 
 
 @app.command()

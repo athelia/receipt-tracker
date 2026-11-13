@@ -21,6 +21,8 @@ click==8.5.1
     # via
     #   pip-tools
     #   uvicorn
+et-xmlfile==2.0.0
+    # via openpyxl
 fastapi==0.162.5
     # via receipt-tracker (pyproject.toml)
 h11==0.16.0
@@ -41,6 +43,8 @@ markdown-it-py==4.3.0
     # via rich
 mdurl==0.1.2
     # via markdown-it-py
+openpyxl==3.1.5
+    # via receipt-tracker (pyproject.toml)
 opentelemetry-api==1.45.2
     # via fastapi
 packaging==26.3

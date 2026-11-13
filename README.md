@@ -46,6 +46,18 @@ Settings come from environment variables prefixed `RECEIPT_TRACKER_`, or from a 
 | `MODEL_SERVER_URL` | `http://localhost:11434` | Local model server (Ollama) |
 | `HOST`, `PORT` | `127.0.0.1`, `8000` | Web app bind address |
 
+## Importing the golden workbook
+
+Receipts entered by hand before this project live in a workbook under `data/`. Load it once with:
+
+```bash
+.venv/bin/receipt-tracker import-golden "data/<workbook>.xlsx" --dry-run
+```
+
+Drop `--dry-run` to save. The import creates stores, receipts, and line items, and seeds products, categories, and item codes from the workbook's lookup sheet. Receipts are marked as golden and already reviewed. It prints every row it cleaned up or could not map, and it is safe to run again: receipts already imported are skipped.
+
+The lookup sheet describes one store's item codes. That store is inferred as the one whose rows match the most lookup codes; pass `--lookup-store NAME` to choose it yourself.
+
 ## Household data
 
 Receipts, photos, spreadsheets, and the database are private and are excluded by `.gitignore` (`data/`, `var/`, databases, images, `.xlsx`). Do not force-add them.
