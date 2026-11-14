@@ -4,8 +4,7 @@ The worker talks to the app only over HTTP, so it can run on the NAS, the Mac
 or beside the GPU PC's model server. It uses the standard library for HTTP to
 avoid adding a dependency.
 
-`Extractor` here is the minimum the worker needs. AA-54 defines the full
-extractor interface; this protocol should be replaced by it then.
+The extraction itself is any `receipt_tracker.extractors.Extractor`.
 """
 
 import json
@@ -15,25 +14,9 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 
-
-class BackendUnavailable(Exception):
-    """The extractor's model server could not be reached. The job is retried."""
-
-
-@dataclass(frozen=True)
-class ExtractionResult:
-    backend: str
-    model: str
-    model_version: str
-    raw_output: str | None = None
-
-
-class Extractor(Protocol):
-    def __call__(self, photos: list[Path]) -> ExtractionResult: ...
+from receipt_tracker.extractors import BackendUnavailable, ExtractionResult, Extractor
 
 
 class ApiError(Exception):
@@ -78,6 +61,7 @@ class QueueClient:
             "model": result.model,
             "model_version": result.model_version,
             "raw_output": result.raw_output,
+            "receipt": result.receipt.to_dict(),
         }
         self._request("POST", f"/jobs/{job_id}/complete", body)
 
@@ -127,7 +111,7 @@ def run_once(
                 photos.append(path)
             if not photos:
                 raise ValueError("Receipt has no photos")
-            result = extractor(photos)
+            result = extractor.extract(photos)
     except (BackendUnavailable, OSError) as error:
         _report(client, job["id"], worker, f"Backend unavailable: {error}", retry=True)
     except Exception as error:  # noqa: BLE001 - any extractor failure is the job's failure

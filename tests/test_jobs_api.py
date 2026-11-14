@@ -2,6 +2,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from receipt_tracker import db, queue, worker
+from receipt_tracker.extractors import BackendUnavailable
+from receipt_tracker.extractors.fake import FakeExtractor
 from receipt_tracker.web.app import create_app
 
 
@@ -94,30 +96,41 @@ class InProcessClient(worker.QueueClient):
         return response.status_code, response.content
 
 
+class Raising:
+    def __init__(self, error):
+        self.error = error
+
+    def extract(self, photos):
+        raise self.error
+
+
 def test_worker_runs_job_and_records_result(env):
     conn, client, archive = env
-    job_id, _ = add_job_with_photo(conn, archive)
+    add_job_with_photo(conn, archive)
     seen = []
 
-    def extractor(photos):
-        seen.append(photos[0].read_bytes())
-        return worker.ExtractionResult("vision", "m", "1", "{}")
+    class Reading(FakeExtractor):
+        def extract(self, photos):
+            seen.extend(p.read_bytes() for p in photos)  # temp files vanish after the job
+            return super().extract(photos)
+
+    extractor = Reading()
 
     assert worker.run_once(InProcessClient(client), extractor, "w1") is True
     assert seen == [b"photo-bytes"]
     assert queue.list_jobs(conn)[0].state == "done"
     assert worker.run_once(InProcessClient(client), extractor, "w1") is False
-    assert job_id
+    lines = conn.execute("SELECT raw_text FROM line_items ORDER BY position").fetchall()
+    assert [row["raw_text"] for row in lines] == ["MILK", "BREAD"]
+    assert conn.execute("SELECT total_cents FROM receipts").fetchone()[0] == 300
 
 
 def test_worker_requeues_when_backend_unavailable(env):
     conn, client, archive = env
     add_job_with_photo(conn, archive)
-
-    def extractor(photos):
-        raise worker.BackendUnavailable("connection refused")
-
-    worker.run_once(InProcessClient(client), extractor, "w1")
+    worker.run_once(
+        InProcessClient(client), Raising(BackendUnavailable("connection refused")), "w1"
+    )
     job = queue.list_jobs(conn)[0]
     assert job.state == "queued"
     assert "connection refused" in job.error
@@ -126,10 +139,24 @@ def test_worker_requeues_when_backend_unavailable(env):
 def test_worker_fails_job_on_extractor_error(env):
     conn, client, archive = env
     add_job_with_photo(conn, archive)
-
-    def extractor(photos):
-        raise ValueError("unreadable")
-
-    worker.run_once(InProcessClient(client), extractor, "w1")
+    worker.run_once(InProcessClient(client), Raising(ValueError("unreadable")), "w1")
     job = queue.list_jobs(conn)[0]
     assert (job.state, job.error) == ("failed", "ValueError: unreadable")
+
+
+def test_invalid_receipt_payload_is_rejected_and_job_stays_claimed(env):
+    conn, client, archive = env
+    job_id, _ = add_job_with_photo(conn, archive)
+    client.post("/jobs/claim", json={"worker": "w1"})
+    response = client.post(
+        f"/jobs/{job_id}/complete",
+        json={
+            "worker": "w1",
+            "backend": "b",
+            "model": "m",
+            "model_version": "1",
+            "receipt": {"lines": [{"raw_text": "X", "line_price_cents": 1.5}]},
+        },
+    )
+    assert response.status_code == 422
+    assert queue.list_jobs(conn)[0].state == "claimed"
