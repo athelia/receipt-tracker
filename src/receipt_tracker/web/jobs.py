@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from receipt_tracker import queue
+from receipt_tracker import extraction_store, queue
+from receipt_tracker.extractors import ExtractedReceipt
 
 
 class ClaimRequest(BaseModel):
@@ -28,6 +29,7 @@ class CompleteRequest(BaseModel):
     model: str = Field(min_length=1)
     model_version: str = Field(min_length=1)
     raw_output: str | None = None
+    receipt: dict | None = None
 
 
 class FailRequest(BaseModel):
@@ -91,6 +93,15 @@ def build_router(
     @router.post("/jobs/{job_id}/complete")
     def jobs_complete(job_id: int, body: CompleteRequest, conn: sqlite3.Connection = Conn) -> dict:
         try:
+            extracted = ExtractedReceipt.from_dict(body.receipt) if body.receipt else None
+        except (TypeError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=f"Invalid receipt: {error}") from error
+
+        def store(conn: sqlite3.Connection, receipt_id: int, extraction_id: int) -> None:
+            if extracted is not None:
+                extraction_store.save_receipt(conn, extraction_id, receipt_id, extracted)
+
+        try:
             extraction_id = queue.complete(
                 conn,
                 job_id,
@@ -99,6 +110,7 @@ def build_router(
                 model=body.model,
                 model_version=body.model_version,
                 raw_output=body.raw_output,
+                after=store,
             )
         except queue.QueueError as error:
             raise refuse(error) from error

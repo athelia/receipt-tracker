@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     # A photo is picked up once it has gone this long without being modified.
     watch_settle_seconds: float = 5.0
     model_server_url: str = "http://localhost:11434"
+    extractor: str | None = None  # backend name; see `receipt_tracker.extractors`
     host: str = "127.0.0.1"
     port: int = 8000
 

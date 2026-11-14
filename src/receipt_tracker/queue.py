@@ -7,6 +7,7 @@ UPDATE, so two workers can never hold the same job.
 """
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -167,12 +168,14 @@ def complete(
     model: str,
     model_version: str,
     raw_output: str | None = None,
+    after: Callable[[sqlite3.Connection, int, int], None] | None = None,
     now: datetime | None = None,
 ) -> int:
     """Mark a job done and record the extraction with its provenance.
 
-    Returns the extraction id. Parsing `raw_output` into line items is the
-    job of the extractor pipeline, not the queue.
+    Returns the extraction id. `after(conn, receipt_id, extraction_id)`, if
+    given, runs inside the same transaction, so a failure there leaves the
+    job claimed. The queue knows nothing about what it stores.
     """
     moment = now or _now()
     conn.execute("BEGIN IMMEDIATE")
@@ -188,12 +191,14 @@ def complete(
             """,
             (receipt_id, job_id, backend, model, model_version, raw_output),
         )
+        assert cursor.lastrowid is not None
+        if after is not None:
+            after(conn, receipt_id, cursor.lastrowid)
         conn.execute(
             "UPDATE jobs SET state = 'done', finished_at = ?, error = NULL WHERE id = ?",
             (_timestamp(moment), job_id),
         )
         conn.execute("COMMIT")
-        assert cursor.lastrowid is not None
         return cursor.lastrowid
     except Exception:
         conn.execute("ROLLBACK")
