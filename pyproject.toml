@@ -13,6 +13,8 @@ dependencies = [
     "typer",
     "pydantic-settings",
     "openpyxl",
+    "pillow",
+    "pillow-heif",
 ]
 
 [project.optional-dependencies]

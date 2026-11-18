@@ -32,6 +32,12 @@ openpyxl==3.1.5
     # via receipt-tracker (pyproject.toml)
 opentelemetry-api==1.45.2
     # via fastapi
+pillow==13.0.0
+    # via
+    #   pillow-heif
+    #   receipt-tracker (pyproject.toml)
+pillow-heif==1.8.1
+    # via receipt-tracker (pyproject.toml)
 pydantic==2.14.3
     # via
     #   fastapi
