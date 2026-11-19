@@ -4,7 +4,7 @@ from pathlib import Path
 
 import typer
 
-from receipt_tracker import __version__
+from receipt_tracker import __version__, logging_setup
 from receipt_tracker.config import get_settings
 
 app = typer.Typer(
@@ -74,7 +74,7 @@ def import_golden(
 @app.command()
 def ingest() -> None:
     """Move ready photos from the watched folder into the archive and queue them."""
-    from receipt_tracker import db, logging_setup
+    from receipt_tracker import db
     from receipt_tracker import ingest as ingest_module
 
     settings = get_settings()
@@ -103,7 +103,7 @@ def watch(
     ),
 ) -> None:
     """Keep ingesting photos as they arrive in the watched folder. Stop with Ctrl-C."""
-    from receipt_tracker import db, logging_setup
+    from receipt_tracker import db
     from receipt_tracker import ingest as ingest_module
 
     settings = get_settings()
@@ -135,8 +135,6 @@ def serve(
 ) -> None:
     """Run the web app."""
     import uvicorn
-
-    from receipt_tracker import logging_setup
 
     settings = get_settings()
     logging_setup.configure(settings, "app")
