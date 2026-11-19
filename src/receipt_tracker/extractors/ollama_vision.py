@@ -41,8 +41,9 @@ cannot read.
 - receipt_number: the receipt, transaction or invoice number as printed.
 - subtotal and total: amounts as printed, with a decimal point, e.g. "12.34".
 - payment_method: how it was paid (e.g. "VISA", "CASH", "DEBIT").
-- you_saved: the total savings printed near the bottom ("you saved", "total \
-savings"), as a positive amount, or null if the receipt has none.
+- you_saved: the receipt's total savings printed near the bottom ("you saved", \
+"total savings"), as a positive amount, or null if the receipt has none. Not \
+the per-item notes.
 - lines: one entry per purchased item, in printed order. Include item_code if \
 the line prints a product code. raw_text is the item description exactly as \
 printed. line_price is only the number printed for that line, e.g. "5.59", \
@@ -50,11 +51,15 @@ with no tax code or letters after it (negative for a printed discount or \
 refund). quantity and unit_price are bare numbers; put the unit (e.g. "lb", \
 "kg", "ea") in unit. Fill them only if the line prints them. discount_percent only for a printed \
 percentage discount.
-- A printed discount under an item (e.g. "20% off (20%)  -1.40") is NOT a line \
-of its own. Do not list it. Set discount_percent on the item above it, and \
-make that item's line_price the price after the discount.
-- item_code: copy the digits exactly as printed, one digit at a time. Use null \
-if the line prints no code.
+- The price printed on an item's line is already after any discount. A line \
+printed under an item that only reports a discount (e.g. "20% off", "You \
+saved: $0.95") is a note, not an item: do not list it and do not change the \
+item's price. If the note states a percentage, set discount_percent on the \
+item above it.
+- item_code: the product code is the run of digits printed at the start of \
+the line, or in a column beside the description. Copy the digits exactly as \
+printed, one digit at a time, into item_code and leave them out of raw_text. \
+Use null if the line prints no code.
 - Do not include totals, tax, payment or change lines in `lines`.
 - If the same item is printed on two lines, list it twice. Never merge or skip \
 lines.
@@ -90,7 +95,7 @@ SCHEMA = {
                     "discount_percent": _NULLABLE_STRING,
                     "line_price": {"type": "string"},
                 },
-                "required": ["raw_text", "line_price"],
+                "required": ["item_code", "raw_text", "line_price"],
             },
         },
     },
@@ -184,6 +189,8 @@ def _parse_line(index: int, raw: object) -> ExtractedLine:
     quantity, quantity_unit = _number_and_unit(raw.get("quantity"))
     unit_price, price_unit = _number_and_unit(raw.get("unit_price"))
     unit = _text(raw.get("unit"), f"line {index} unit") or quantity_unit or price_unit
+    if quantity is None and unit_price is None:
+        unit = None  # a unit only means something next to a quantity or unit price
     return ExtractedLine(
         raw_text=raw_text,
         line_price_cents=price,

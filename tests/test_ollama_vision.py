@@ -325,3 +325,18 @@ def test_the_retry_sends_the_other_turn_not_the_same_image_again(serve, tmp_path
     first, second = sent_images(server)
     assert not is_colour(first.getpixel((3, 3)), "red")  # the first guess was the wrong turn
     assert is_colour(second.getpixel((3, 3)), "red")
+
+
+def test_a_unit_without_a_quantity_or_unit_price_is_dropped():
+    # The model sometimes puts the tax flag, or a size from the description, in `unit`.
+    receipt = parse_receipt(
+        json.dumps(
+            {
+                "lines": [
+                    {"raw_text": "OAT MILK", "line_price": "4.49", "unit": "T"},
+                    {"raw_text": "APPLES", "line_price": "1.50", "quantity": "2", "unit": "lb"},
+                ]
+            }
+        )
+    )
+    assert [line.unit for line in receipt.lines] == [None, "lb"]

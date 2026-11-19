@@ -7,6 +7,10 @@ configured model and takes minutes per case on CPU:
 
 A pass on a clean synthetic render is a regression check, not a measure of
 accuracy on real photos; that is what the golden-set evaluation (AA-56) is for.
+
+Known gap, deliberately not asserted: the model does not reliably set
+`discount_percent` from a "20% off" note. The printed price is already net and
+the receipt-level savings figure is checked, so nothing downstream depends on it.
 """
 
 import pytest
@@ -19,9 +23,9 @@ TRUTH = synthetic.sample_truth()
 
 
 def test_truth_is_internally_consistent():
-    assert sum(line.price_cents for line in TRUTH.lines) == TRUTH.subtotal_cents == 2724
-    assert TRUTH.total_cents == 2860
-    assert TRUTH.savings_cents == 220
+    assert sum(line.price_cents for line in TRUTH.lines) == TRUTH.subtotal_cents == 2818
+    assert TRUTH.total_cents == 2954
+    assert TRUTH.savings_cents == 315
     assert len({(line.code, line.text) for line in TRUTH.lines}) < len(TRUTH.lines)  # has repeats
 
 

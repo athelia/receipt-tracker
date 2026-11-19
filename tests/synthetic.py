@@ -16,10 +16,10 @@ from PIL import Image, ImageDraw, ImageFont
 class TruthLine:
     code: str
     text: str
-    price_cents: int  # the net price printed for the line
+    price_cents: int  # the price printed on the line; stores print it already net of discounts
     tax_flag: str = ""
-    discount_bp: int | None = None  # a printed "20% OFF" line under the item
-    discount_cents: int = 0
+    discount_bp: int | None = None  # a "20% off (20%)   (2.20)" note under the item
+    discount_cents: int = 0  # without discount_bp: a "You saved: $0.95" note under the item
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,7 @@ def sample_truth() -> Truth:
             TruthLine("82600012345", "OAT MILK 64OZ", 449, tax_flag="T"),
             TruthLine("82600012345", "OAT MILK 64OZ", 449, tax_flag="T"),
             TruthLine("9012", "COFFEE BEANS 12OZ", 879, discount_bp=2000, discount_cents=220),
+            TruthLine("2210", "DICE TOMATO FR 14OZ", 94, discount_cents=95),
             TruthLine("1583", "PEANUT BUTTER 16OZ", 379),
             TruthLine("1583", "PEANUT BUTTER 16OZ", 379),
         ]
@@ -74,10 +75,13 @@ def render(truth: Truth, *, width: int = 640, font_size: int = 22) -> Image.Imag
         ("", ""),
     ]
     for line in truth.lines:
-        gross = line.price_cents + line.discount_cents
-        rows.append((f"{line.code}  {line.text}", f"{money(gross)} {line.tax_flag}".strip()))
+        price = f"{money(line.price_cents)} {line.tax_flag}".strip()
+        rows.append((f"{line.code}  {line.text}", price))
         if line.discount_bp:
-            rows.append((f"      {line.discount_bp // 100}% OFF", f"-{money(line.discount_cents)}"))
+            percent = line.discount_bp // 100
+            rows.append((f"  {percent}% off ({percent}%)", f"({money(line.discount_cents)})"))
+        elif line.discount_cents:
+            rows.append((f"  You saved: ${money(line.discount_cents)}", ""))
     rows += [
         ("", ""),
         ("SUBTOTAL", money(truth.subtotal_cents)),
