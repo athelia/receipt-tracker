@@ -22,7 +22,14 @@ class BackendUnavailable(Exception):
 
 
 class ExtractionError(Exception):
-    """The backend ran but could not produce a usable result for this receipt."""
+    """The backend ran but could not produce a usable result for this receipt.
+
+    `raw_output` optionally carries what the model said, for the opt-in failure log.
+    """
+
+    def __init__(self, message: str = "", *, raw_output: str | None = None):
+        super().__init__(message)
+        self.raw_output = raw_output
 
 
 def _check_confidence(value: float | None) -> None:

@@ -1,0 +1,83 @@
+"""Structured event log: one JSON object per line in a rotating text file.
+
+Each process (app, worker, CLI) writes its own file, `<log_dir>/<process>.log`,
+because a rotating file is not safe to share between processes and the worker
+may run on another machine. Events carry the job id so one job can be followed
+across the files with a grep.
+
+Library code calls `event()`; nothing is written until a process calls
+`configure()`. Receipt contents stay out of the log: raw model output is only
+written, to its own file, when `log_raw_failures` is enabled.
+"""
+
+import json
+import logging
+from datetime import UTC, datetime
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+from receipt_tracker.config import Settings
+
+ROOT = "receipt_tracker"
+RAW_FAILURES_FILE = "raw-failures.jsonl"
+_HANDLER_MARK = "_receipt_tracker_handler"
+
+logging.getLogger(ROOT).addHandler(logging.NullHandler())
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        entry = {
+            "ts": datetime.fromtimestamp(record.created, UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "level": record.levelname,
+            "event": record.getMessage(),
+            **getattr(record, "fields", {}),
+        }
+        if record.exc_info:
+            entry["traceback"] = self.formatException(record.exc_info)
+        return json.dumps(entry, default=str)
+
+
+def event(name: str, *, level: int = logging.INFO, **fields: object) -> None:
+    """Record one event. `fields` become keys of the JSON line (e.g. job_id=3)."""
+    logging.getLogger(f"{ROOT}.events").log(level, name, extra={"fields": fields})
+
+
+def configure(settings: Settings, process: str) -> Path:
+    """Send this process's events to `<log_dir>/<process>.log`. Safe to call twice."""
+    assert settings.log_dir is not None
+    settings.log_dir.mkdir(parents=True, exist_ok=True)
+    path = settings.log_dir / f"{process}.log"
+    root = logging.getLogger(ROOT)
+    for handler in list(root.handlers):
+        if getattr(handler, _HANDLER_MARK, False):
+            root.removeHandler(handler)
+            handler.close()
+    handler = RotatingFileHandler(
+        path, maxBytes=settings.log_max_bytes, backupCount=settings.log_backup_count
+    )
+    handler.setFormatter(JsonFormatter())
+    setattr(handler, _HANDLER_MARK, True)
+    root.addHandler(handler)
+    root.setLevel(settings.log_level.upper())
+    return path
+
+
+def raw_failure_path(settings: Settings) -> Path | None:
+    """Where raw model output of failed extractions goes, or None when disabled."""
+    if not settings.log_raw_failures or settings.log_dir is None:
+        return None
+    return settings.log_dir / RAW_FAILURES_FILE
+
+
+def write_raw_failure(path: Path, job_id: int, error: str, raw_output: str) -> None:
+    """Append a failed extraction's raw model answer. Contains receipt text: local only."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "job_id": job_id,
+        "error": error,
+        "raw_output": raw_output,
+    }
+    with path.open("a") as handle:
+        handle.write(json.dumps(entry) + "\n")
