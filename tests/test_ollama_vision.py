@@ -47,12 +47,13 @@ GOOD = {
 class FakeOllama:
     """A real HTTP server on loopback that plays back scripted /api/chat answers."""
 
-    def __init__(self, answers, models=None, chat_status=200):
+    def __init__(self, answers, models=None, chat_status=200, stats=None):
         self.answers = list(answers)
         self.models = (
             models if models is not None else [{"name": "vis:7b", "digest": "abcdef1234567890"}]
         )
         self.chat_status = chat_status
+        self.stats = stats or {}
         self.requests = []
         outer = self
 
@@ -77,7 +78,9 @@ class FakeOllama:
                     return self._send(outer.chat_status, {"error": "model 'vis:7b' not found"})
                 answer = outer.answers.pop(0)
                 content = answer if isinstance(answer, str) else json.dumps(answer)
-                self._send(200, {"message": {"role": "assistant", "content": content}})
+                self._send(
+                    200, {"message": {"role": "assistant", "content": content}, **outer.stats}
+                )
 
         self.server = HTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_port}"
@@ -340,3 +343,67 @@ def test_a_unit_without_a_quantity_or_unit_price_is_dropped():
         )
     )
     assert [line.unit for line in receipt.lines] == [None, "lb"]
+
+
+# --- what the backend logs ---------------------------------------------------
+
+STATS = {
+    "total_duration": 12_340_000_000,
+    "load_duration": 2_500_000_000,
+    "prompt_eval_count": 1500,
+    "eval_count": 420,
+}
+
+
+def named(read, name):
+    return [entry for entry in read() if entry["event"] == name]
+
+
+def test_each_model_call_logs_timing_tokens_and_image_settings(serve, tmp_path, log):
+    server = serve([GOOD], stats=STATS)
+    extractor(server, max_edge=300, num_ctx=4096).extract([make_photo(tmp_path, (200, 400))])
+
+    (call,) = named(log, "model_call")
+    assert (call["attempt"], call["model"], call["images"]) == (1, "vis:7b", 1)
+    assert call["image_sizes"] == [[150, 300]]  # downsized to the configured edge
+    assert call["num_ctx"] == 4096
+    assert (call["ollama_total_s"], call["ollama_load_s"]) == (12.34, 2.5)
+    assert (call["prompt_tokens"], call["output_tokens"]) == (1500, 420)
+    assert call["duration_s"] >= 0 and call["answer_chars"] > 0
+
+
+def test_missing_ollama_stats_are_logged_as_null_not_an_error(serve, tmp_path, log):
+    extractor(serve([GOOD])).extract([make_photo(tmp_path)])
+    (call,) = named(log, "model_call")
+    assert call["output_tokens"] is None and call["ollama_total_s"] is None
+
+
+def test_orientation_used_is_logged_with_the_attempt(serve, tmp_path, log):
+    extractor(serve([GOOD])).extract([make_photo(tmp_path, (200, 400))])
+    (used,) = named(log, "orientation_used")
+    assert (used["attempt"], used["of"], used["lines"]) == (1, 1, 2)
+    assert named(log, "orientation_failed") == []
+
+
+def test_a_failed_orientation_is_logged_before_the_retry_that_works(serve, tmp_path, log):
+    server = serve(["not json", GOOD])
+    extractor(server).extract([make_photo(tmp_path, (400, 200))])  # landscape: two tries
+    (failed,) = named(log, "orientation_failed")
+    assert (failed["attempt"], failed["of"], failed["level"]) == (1, 2, "WARNING")
+    assert "JSON" in failed["error"]
+    assert named(log, "orientation_used")[0]["attempt"] == 2
+    assert [call["attempt"] for call in named(log, "model_call")] == [1, 2]
+
+
+def test_final_error_carries_the_last_raw_answer(serve, tmp_path):
+    server = serve(["first bad answer", "last bad answer"])
+    with pytest.raises(ExtractionError) as caught:
+        extractor(server).extract([make_photo(tmp_path, (400, 200))])
+    assert caught.value.raw_output == "last bad answer"
+
+
+def test_failed_portrait_extraction_also_carries_the_raw_answer(serve, tmp_path):
+    server = serve(["{not valid"])
+    with pytest.raises(ExtractionError) as caught:
+        extractor(server).extract([make_photo(tmp_path, (200, 400))])
+    assert caught.value.raw_output == "{not valid"

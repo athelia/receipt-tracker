@@ -6,10 +6,13 @@ vanishes does not strand a job. Every state change is a single conditional
 UPDATE, so two workers can never hold the same job.
 """
 
+import logging
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+
+from receipt_tracker.logging_setup import event
 
 DEFAULT_LEASE_SECONDS = 300
 DEFAULT_MAX_ATTEMPTS = 3
@@ -59,6 +62,7 @@ def enqueue(conn: sqlite3.Connection, receipt_id: int, requested_backend: str | 
         (receipt_id, requested_backend),
     )
     assert cursor.lastrowid is not None
+    event("job_enqueued", job_id=cursor.lastrowid, receipt_id=receipt_id, backend=requested_backend)
     return cursor.lastrowid
 
 
@@ -82,7 +86,7 @@ def claim(
     stamp = _timestamp(moment)
     conn.execute("BEGIN IMMEDIATE")
     try:
-        _fail_exhausted(conn, stamp, max_attempts)
+        exhausted = _fail_exhausted(conn, stamp, max_attempts)
         clause, params = "", []
         if backends is not None:
             marks = ", ".join("?" for _ in backends)
@@ -90,7 +94,7 @@ def claim(
             params = list(backends)
         row = conn.execute(
             f"""
-            SELECT id FROM jobs
+            SELECT id, state, claimed_by FROM jobs
             WHERE (state = 'queued' OR (state = 'claimed' AND claim_expires_at <= ?)){clause}
             ORDER BY created_at, id
             LIMIT 1
@@ -99,6 +103,7 @@ def claim(
         ).fetchone()
         if row is None:
             conn.execute("COMMIT")
+            _log_exhausted(exhausted)
             return None
         conn.execute(
             """
@@ -111,13 +116,36 @@ def claim(
         )
         job = _job(conn.execute("SELECT * FROM jobs WHERE id = ?", (row["id"],)).fetchone())
         conn.execute("COMMIT")
+        _log_exhausted(exhausted)
+        if row["state"] == "claimed":
+            event(
+                "lease_expired",
+                job_id=job.id,
+                previous_worker=row["claimed_by"],
+                attempts=job.attempts - 1,
+            )
+        event(
+            "job_claimed",
+            job_id=job.id,
+            receipt_id=job.receipt_id,
+            worker=worker,
+            attempt=job.attempts,
+        )
         return job
     except Exception:
         conn.execute("ROLLBACK")
         raise
 
 
-def _fail_exhausted(conn: sqlite3.Connection, stamp: str, max_attempts: int) -> None:
+def _fail_exhausted(conn: sqlite3.Connection, stamp: str, max_attempts: int) -> list[int]:
+    ids = [
+        row["id"]
+        for row in conn.execute(
+            "SELECT id FROM jobs WHERE state = 'claimed' AND claim_expires_at <= ?"
+            " AND attempts >= ?",
+            (stamp, max_attempts),
+        )
+    ]
     conn.execute(
         """
         UPDATE jobs
@@ -126,6 +154,17 @@ def _fail_exhausted(conn: sqlite3.Connection, stamp: str, max_attempts: int) -> 
         """,
         (stamp, stamp, max_attempts),
     )
+    return ids
+
+
+def _log_exhausted(job_ids: list[int]) -> None:
+    for job_id in job_ids:
+        event(
+            "job_failed",
+            level=logging.WARNING,
+            job_id=job_id,
+            reason="claim_expired_too_many_times",
+        )
 
 
 def _require_claim(conn: sqlite3.Connection, job_id: int, worker: str, now: datetime) -> None:
@@ -199,6 +238,16 @@ def complete(
             (_timestamp(moment), job_id),
         )
         conn.execute("COMMIT")
+        event(
+            "job_completed",
+            job_id=job_id,
+            receipt_id=receipt_id,
+            worker=worker,
+            extraction_id=cursor.lastrowid,
+            backend=backend,
+            model=model,
+            model_version=model_version,
+        )
         return cursor.lastrowid
     except Exception:
         conn.execute("ROLLBACK")
@@ -244,6 +293,15 @@ def fail(
             )
             state = "failed"
         conn.execute("COMMIT")
+        event(
+            "job_requeued" if state == "queued" else "job_failed",
+            level=logging.INFO if state == "queued" else logging.WARNING,
+            job_id=job_id,
+            worker=worker,
+            attempt=attempts,
+            retry=retry,
+            error=error,
+        )
         return state
     except Exception:
         conn.execute("ROLLBACK")
@@ -263,6 +321,7 @@ def requeue(conn: sqlite3.Connection, job_id: int) -> None:
     )
     if cursor.rowcount == 0:
         raise QueueError(f"Job {job_id} is not done or failed")
+    event("job_rerun_requested", job_id=job_id)
 
 
 def status(conn: sqlite3.Connection, *, now: datetime | None = None) -> dict[str, int]:

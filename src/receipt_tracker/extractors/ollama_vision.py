@@ -10,15 +10,20 @@ address is refused before any image is sent.
 """
 
 import base64
+import io
 import ipaddress
 import json
+import logging
 import re
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+
+from PIL import Image
 
 from receipt_tracker.config import Settings
 from receipt_tracker.extractors import images
@@ -30,6 +35,7 @@ from receipt_tracker.extractors.base import (
     ExtractionError,
     ExtractionResult,
 )
+from receipt_tracker.logging_setup import event
 
 PROMPT = """\
 You are reading a photographed grocery receipt. Transcribe what is printed; do \
@@ -312,7 +318,7 @@ class OllamaVisionExtractor:
                 raise BackendUnavailable(f"Model {self.model!r} is not installed (ollama pull it)")
         return self._version
 
-    def _ask(self, jpegs: list[bytes]) -> str:
+    def _ask(self, jpegs: list[bytes], attempt: int = 1) -> str:
         body = {
             "model": self.model,
             "stream": False,
@@ -326,8 +332,24 @@ class OllamaVisionExtractor:
                 }
             ],
         }
+        started = time.monotonic()
         reply = self._call("POST", "/api/chat", body)
         content = (reply.get("message") or {}).get("content")
+        event(
+            "model_call",
+            attempt=attempt,
+            model=self.model,
+            images=len(jpegs),
+            image_sizes=[list(Image.open(io.BytesIO(jpeg)).size) for jpeg in jpegs],
+            image_kb=round(sum(len(jpeg) for jpeg in jpegs) / 1024),
+            num_ctx=self.num_ctx,
+            duration_s=round(time.monotonic() - started, 2),
+            ollama_total_s=_seconds(reply.get("total_duration")),
+            ollama_load_s=_seconds(reply.get("load_duration")),
+            prompt_tokens=reply.get("prompt_eval_count"),
+            output_tokens=reply.get("eval_count"),
+            answer_chars=len(content) if isinstance(content, str) else 0,
+        )
         if not isinstance(content, str) or not content.strip():
             raise ExtractionError("Model returned an empty answer")
         self.last_raw = content
@@ -340,17 +362,27 @@ class OllamaVisionExtractor:
         version = self.model_version()
         variants = [list(images.orientations(images.load(photo))) for photo in photos]
         last_error: ExtractionError | None = None
-        for attempt in range(max(len(v) for v in variants)):
+        last_answer: str | None = None
+        attempts = max(len(v) for v in variants)
+        for attempt in range(attempts):
             pieces = []
             for options in variants:
                 pieces.extend(images.tiles(options[min(attempt, len(options) - 1)]))
             jpegs = [images.to_jpeg(piece, self.max_edge) for piece in pieces]
-            content = self._ask(jpegs)
+            content = last_answer = self._ask(jpegs, attempt + 1)
             try:
                 receipt = parse_receipt(content)
             except ExtractionError as error:
                 last_error = error
+                event(
+                    "orientation_failed",
+                    level=logging.WARNING,
+                    attempt=attempt + 1,
+                    of=attempts,
+                    error=str(error),
+                )
                 continue
+            event("orientation_used", attempt=attempt + 1, of=attempts, lines=len(receipt.lines))
             return ExtractionResult(
                 receipt=receipt,
                 backend="ollama-vision",
@@ -358,7 +390,16 @@ class OllamaVisionExtractor:
                 model_version=version,
                 raw_output=content,
             )
-        raise ExtractionError(f"No orientation produced a valid receipt: {last_error}")
+        raise ExtractionError(
+            f"No orientation produced a valid receipt: {last_error}", raw_output=last_answer
+        )
+
+
+def _seconds(nanoseconds: object) -> float | None:
+    """Ollama reports durations in nanoseconds."""
+    if isinstance(nanoseconds, int | float) and not isinstance(nanoseconds, bool):
+        return round(nanoseconds / 1e9, 2)
+    return None
 
 
 def build(settings: Settings) -> OllamaVisionExtractor:

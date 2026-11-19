@@ -8,6 +8,7 @@ The extraction itself is any `receipt_tracker.extractors.Extractor`.
 """
 
 import json
+import logging
 import tempfile
 import threading
 import time
@@ -16,7 +17,13 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
-from receipt_tracker.extractors import BackendUnavailable, ExtractionResult, Extractor
+from receipt_tracker.extractors import (
+    BackendUnavailable,
+    ExtractionError,
+    ExtractionResult,
+    Extractor,
+)
+from receipt_tracker.logging_setup import event, job_context, write_raw_failure
 
 
 class ApiError(Exception):
@@ -91,18 +98,26 @@ def run_once(
     *,
     backends: list[str] | None = None,
     lease_seconds: int = 300,
+    raw_failure_log: Path | None = None,
 ) -> bool:
-    """Claim and process one job. Returns False if there was nothing to do."""
+    """Claim and process one job. Returns False if there was nothing to do.
+
+    When `raw_failure_log` is given, the raw model answer of an extraction that
+    fails is appended to it (see `logging_setup.raw_failure_path`).
+    """
     job = client.claim(worker, backends, lease_seconds)
     if job is None:
         return False
+    started = time.monotonic()
+    job_id = job["id"]
+    photo_count = len(job["photos"])
     stop = threading.Event()
     beat = threading.Thread(
         target=_keep_alive, args=(client, job["id"], worker, lease_seconds, stop), daemon=True
     )
     beat.start()
     try:
-        with tempfile.TemporaryDirectory() as folder:
+        with tempfile.TemporaryDirectory() as folder, job_context(job_id):
             photos = []
             for photo in job["photos"]:
                 suffix = Path(photo["original_filename"]).suffix
@@ -113,14 +128,52 @@ def run_once(
                 raise ValueError("Receipt has no photos")
             result = extractor.extract(photos)
     except (BackendUnavailable, OSError) as error:
-        _report(client, job["id"], worker, f"Backend unavailable: {error}", retry=True)
+        event(
+            "extraction_unavailable",
+            level=logging.WARNING,
+            job_id=job_id,
+            worker=worker,
+            photos=photo_count,
+            duration_s=_elapsed(started),
+            error_type=type(error).__name__,
+            error=str(error),
+        )
+        _report(client, job_id, worker, f"Backend unavailable: {error}", retry=True)
     except Exception as error:  # noqa: BLE001 - any extractor failure is the job's failure
-        _report(client, job["id"], worker, f"{type(error).__name__}: {error}", retry=False)
+        event(
+            "extraction_failed",
+            level=logging.ERROR,
+            job_id=job_id,
+            worker=worker,
+            photos=photo_count,
+            duration_s=_elapsed(started),
+            error_type=type(error).__name__,
+            error=str(error),
+        )
+        raw = error.raw_output if isinstance(error, ExtractionError) else None
+        if raw_failure_log is not None and raw:
+            write_raw_failure(raw_failure_log, job_id, str(error), raw)
+        _report(client, job_id, worker, f"{type(error).__name__}: {error}", retry=False)
     else:
-        client.complete(job["id"], worker, result)
+        event(
+            "extraction_finished",
+            job_id=job_id,
+            worker=worker,
+            photos=photo_count,
+            duration_s=_elapsed(started),
+            backend=result.backend,
+            model=result.model,
+            model_version=result.model_version,
+            lines=len(result.receipt.lines),
+        )
+        client.complete(job_id, worker, result)
     finally:
         stop.set()
     return True
+
+
+def _elapsed(started: float) -> float:
+    return round(time.monotonic() - started, 2)
 
 
 def _report(client: QueueClient, job_id: int, worker: str, error: str, *, retry: bool) -> None:
@@ -139,12 +192,18 @@ def run(
     lease_seconds: int = 300,
     poll_seconds: float = 10.0,
     should_stop: Callable[[], bool] = lambda: False,
+    raw_failure_log: Path | None = None,
 ) -> None:
     """Process jobs until `should_stop()`; sleep when idle or the app is unreachable."""
     while not should_stop():
         try:
             busy = run_once(
-                client, extractor, worker, backends=backends, lease_seconds=lease_seconds
+                client,
+                extractor,
+                worker,
+                backends=backends,
+                lease_seconds=lease_seconds,
+                raw_failure_log=raw_failure_log,
             )
         except (ApiError, OSError):
             busy = False

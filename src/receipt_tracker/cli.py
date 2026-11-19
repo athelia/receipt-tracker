@@ -4,7 +4,7 @@ from pathlib import Path
 
 import typer
 
-from receipt_tracker import __version__
+from receipt_tracker import __version__, logging_setup
 from receipt_tracker.config import get_settings
 
 app = typer.Typer(
@@ -78,6 +78,7 @@ def ingest() -> None:
     from receipt_tracker import ingest as ingest_module
 
     settings = get_settings()
+    logging_setup.configure(settings, "cli")
     conn = db.connect(settings.db_path)
     try:
         db.migrate(conn)
@@ -106,6 +107,7 @@ def watch(
     from receipt_tracker import ingest as ingest_module
 
     settings = get_settings()
+    logging_setup.configure(settings, "cli")
     conn = db.connect(settings.db_path)
     try:
         db.migrate(conn)
@@ -135,6 +137,7 @@ def serve(
     import uvicorn
 
     settings = get_settings()
+    logging_setup.configure(settings, "app")
     uvicorn.run(
         "receipt_tracker.web.app:create_app",
         factory=True,

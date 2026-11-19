@@ -52,7 +52,22 @@ Settings come from environment variables prefixed `RECEIPT_TRACKER_`, or from a 
 | `WATCH_INTERVAL_SECONDS` | `10` | How often `watch` scans the folder |
 | `WATCH_SETTLE_SECONDS` | `5` | How long a photo must sit unmodified before pickup |
 | `MODEL_SERVER_URL` | `http://localhost:11434` | Local model server (Ollama) |
+| `LOG_DIR` | `<DATA_DIR>/logs` | Event logs: `app.log`, `cli.log`, `worker.log` (JSON lines) |
+| `LOG_LEVEL` | `INFO` | Minimum level written to the event log |
+| `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT` | `5000000`, `5` | Rotation size and number of old files kept |
+| `LOG_RAW_FAILURES` | `false` | Also keep the raw model answer of failed extractions in `raw-failures.jsonl` (contains receipt text) |
 | `HOST`, `PORT` | `127.0.0.1`, `8000` | Web app bind address |
+
+## Logs
+
+Each process writes its own JSON-lines file under `LOG_DIR`, one event per line with a UTC timestamp and, for job events, a `job_id`. To follow one job or find failures:
+
+```bash
+grep '"job_id": 12' var/logs/*.log
+grep '"extraction_failed"' var/logs/worker.log
+```
+
+Events include `job_enqueued`, `job_claimed`, `lease_expired`, `job_requeued`, `job_failed`, `job_completed`, and the worker's `extraction_finished`, `extraction_failed` (error type and message) and `extraction_unavailable`. The vision backend adds `model_call` (wall-clock and Ollama's own timing, load time, prompt and output token counts, image sizes, `num_ctx`) for every request, `orientation_failed` and `orientation_used` for the sideways-photo retries, and these carry the job's `job_id` like the rest. A requeue because the model server was unreachable is logged separately from a failure. Raw model output is never in these files; with `LOG_RAW_FAILURES=true` the model's last answer for a failed extraction goes to `raw-failures.jsonl` beside them. Logs stay on the machine and are not committed.
 
 ## Adding receipt photos
 

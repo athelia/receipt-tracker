@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     vision_max_edge: int = 2240
     vision_num_ctx: int = 8192
     extractor: str | None = None  # backend name; see `receipt_tracker.extractors`
+    # Structured event log (JSON lines), one rotating file per process.
+    log_dir: Path | None = None
+    log_level: str = "INFO"
+    log_max_bytes: int = 5_000_000
+    log_backup_count: int = 5
+    # Also keep the raw model answer of failed extractions, in a separate file.
+    # Off by default: the raw answer contains receipt text.
+    log_raw_failures: bool = False
     host: str = "127.0.0.1"
     port: int = 8000
 
@@ -37,6 +45,8 @@ class Settings(BaseSettings):
             self.db_path = self.data_dir / "receipt_tracker.db"
         if self.watch_dir is None:
             self.watch_dir = self.data_dir / "inbox"
+        if self.log_dir is None:
+            self.log_dir = self.data_dir / "logs"
         if self.archive_dir is None:
             self.archive_dir = self.data_dir / "archive"
 
