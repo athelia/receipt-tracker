@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     # A photo is picked up once it has gone this long without being modified.
     watch_settle_seconds: float = 5.0
     model_server_url: str = "http://localhost:11434"
+    vision_model: str = "qwen2.5vl:7b"  # candidate; AA-56 picks the model
+    model_timeout_seconds: float = 300.0
+    vision_max_edge: int = 2240
+    vision_num_ctx: int = 8192
     extractor: str | None = None  # backend name; see `receipt_tracker.extractors`
     host: str = "127.0.0.1"
     port: int = 8000

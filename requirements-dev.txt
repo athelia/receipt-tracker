@@ -52,6 +52,12 @@ packaging==26.3
     #   build
     #   pytest
     #   wheel
+pillow==13.0.0
+    # via
+    #   pillow-heif
+    #   receipt-tracker (pyproject.toml)
+pillow-heif==1.8.1
+    # via receipt-tracker (pyproject.toml)
 pip-tools==7.6.2
     # via receipt-tracker (pyproject.toml)
 pluggy==1.7.0
