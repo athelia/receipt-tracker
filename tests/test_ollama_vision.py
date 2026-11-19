@@ -272,3 +272,56 @@ def test_backend_is_registered_for_local_network_and_built_from_settings():
     assert "ollama-vision" in available()
     built = create("ollama-vision", Settings(vision_model="m:1", model_timeout_seconds=9))
     assert (built.model, built.timeout) == ("m:1", 9)
+
+
+def sent_images(server):
+    import base64
+    import io
+
+    return [
+        Image.open(io.BytesIO(base64.b64decode(data)))
+        for request in server.requests
+        for message in request["messages"]
+        for data in message["images"]
+    ]
+
+
+def marker_photo(tmp_path, turn, name="marked.png"):
+    """A photo whose top-left is red, top-right blue, bottom-left green, turned by `turn`."""
+    image = Image.new("RGB", (100, 200), "white")
+    for x0, y0, colour in [(0, 0, "red"), (90, 0, "blue"), (0, 190, "green")]:
+        image.paste(Image.new("RGB", (10, 10), colour), (x0, y0))
+    path = tmp_path / name
+    image.rotate(turn, expand=True).save(path)
+    return path
+
+
+def is_colour(pixel, wanted):
+    r, g, b = pixel
+    return {"red": r > 200 > g, "blue": b > 200 > r, "green": g > 100 > r}[wanted]
+
+
+def test_the_model_is_sent_an_upright_image(serve, tmp_path):
+    server = serve([GOOD])
+    extractor(server).extract([marker_photo(tmp_path, turn=0)])
+    (sent,) = sent_images(server)
+    assert is_colour(sent.getpixel((3, 3)), "red")
+    assert is_colour(sent.getpixel((sent.width - 4, 3)), "blue")
+    assert is_colour(sent.getpixel((3, sent.height - 4)), "green")
+
+
+def test_a_sideways_photo_is_turned_upright_before_it_is_sent(serve, tmp_path):
+    server = serve([GOOD])
+    extractor(server).extract([marker_photo(tmp_path, turn=-90)])
+    (sent,) = sent_images(server)
+    assert sent.height > sent.width
+    assert is_colour(sent.getpixel((3, 3)), "red")
+    assert is_colour(sent.getpixel((sent.width - 4, 3)), "blue")
+
+
+def test_the_retry_sends_the_other_turn_not_the_same_image_again(serve, tmp_path):
+    server = serve(["not json", GOOD])
+    extractor(server).extract([marker_photo(tmp_path, turn=90)])
+    first, second = sent_images(server)
+    assert not is_colour(first.getpixel((3, 3)), "red")  # the first guess was the wrong turn
+    assert is_colour(second.getpixel((3, 3)), "red")
