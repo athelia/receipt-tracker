@@ -67,7 +67,7 @@ grep '"job_id": 12' var/logs/*.log
 grep '"extraction_failed"' var/logs/worker.log
 ```
 
-Events include `job_enqueued`, `job_claimed`, `lease_expired`, `job_requeued`, `job_failed`, `job_completed`, and the worker's `extraction_finished`, `extraction_failed` (error type and message) and `extraction_unavailable`. A requeue because the model server was unreachable is logged separately from a failure. Raw model output is never in these files; with `LOG_RAW_FAILURES=true` it goes to `raw-failures.jsonl` beside them. Logs stay on the machine and are not committed.
+Events include `job_enqueued`, `job_claimed`, `lease_expired`, `job_requeued`, `job_failed`, `job_completed`, and the worker's `extraction_finished`, `extraction_failed` (error type and message) and `extraction_unavailable`. The vision backend adds `model_call` (wall-clock and Ollama's own timing, load time, prompt and output token counts, image sizes, `num_ctx`) for every request, `orientation_failed` and `orientation_used` for the sideways-photo retries, and these carry the job's `job_id` like the rest. A requeue because the model server was unreachable is logged separately from a failure. Raw model output is never in these files; with `LOG_RAW_FAILURES=true` the model's last answer for a failed extraction goes to `raw-failures.jsonl` beside them. Logs stay on the machine and are not committed.
 
 ## Adding receipt photos
 

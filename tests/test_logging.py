@@ -12,23 +12,6 @@ from receipt_tracker.extractors.fake import FakeExtractor
 from receipt_tracker.web.app import create_app
 
 
-@pytest.fixture
-def settings(tmp_path):
-    return Settings(data_dir=tmp_path, _env_file=None)
-
-
-@pytest.fixture
-def log(settings):
-    """Route events to a file under tmp_path and return a reader for them."""
-    path = logging_setup.configure(settings, "test")
-    yield lambda: [json.loads(line) for line in path.read_text().splitlines()]
-    root = logging.getLogger(logging_setup.ROOT)
-    for handler in list(root.handlers):
-        if getattr(handler, logging_setup._HANDLER_MARK, False):
-            root.removeHandler(handler)
-            handler.close()
-
-
 def events(read, name):
     return [entry for entry in read() if entry["event"] == name]
 
@@ -253,3 +236,31 @@ def test_failure_without_raw_output_writes_nothing_even_when_enabled(env, tmp_pa
     path = logging_setup.raw_failure_path(settings)
     worker.run_once(client, Raising(ValueError("unreadable")), "w1", raw_failure_log=path)
     assert not path.exists()
+
+
+# --- job context -----------------------------------------------------------------
+
+
+def test_events_inside_a_job_context_carry_its_job_id(log):
+    logging_setup.event("outside")
+    with logging_setup.job_context(41):
+        logging_setup.event("inside")
+        logging_setup.event("explicit", job_id=99)
+    logging_setup.event("after")
+    by_name = {entry["event"]: entry for entry in log()}
+    assert "job_id" not in by_name["outside"] and "job_id" not in by_name["after"]
+    assert by_name["inside"]["job_id"] == 41
+    assert by_name["explicit"]["job_id"] == 99  # an explicit value wins
+
+
+def test_extractor_events_get_the_job_id_without_knowing_it(env, log):
+    conn, client, job_id = env
+
+    class Chatty(FakeExtractor):
+        def extract(self, photos):
+            logging_setup.event("model_call", note="from inside the extractor")
+            return super().extract(photos)
+
+    worker.run_once(client, Chatty(), "w1")
+    (entry,) = events(log, "model_call")
+    assert entry["job_id"] == job_id

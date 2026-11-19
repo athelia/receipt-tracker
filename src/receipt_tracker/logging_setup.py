@@ -10,8 +10,11 @@ Library code calls `event()`; nothing is written until a process calls
 written, to its own file, when `log_raw_failures` is enabled.
 """
 
+import contextvars
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -23,6 +26,18 @@ RAW_FAILURES_FILE = "raw-failures.jsonl"
 _HANDLER_MARK = "_receipt_tracker_handler"
 
 logging.getLogger(ROOT).addHandler(logging.NullHandler())
+
+_current_job: contextvars.ContextVar[int | None] = contextvars.ContextVar("job_id", default=None)
+
+
+@contextmanager
+def job_context(job_id: int) -> Iterator[None]:
+    """Events logged inside this block carry `job_id`, even from code that does not know it."""
+    token = _current_job.set(job_id)
+    try:
+        yield
+    finally:
+        _current_job.reset(token)
 
 
 class JsonFormatter(logging.Formatter):
@@ -40,6 +55,9 @@ class JsonFormatter(logging.Formatter):
 
 def event(name: str, *, level: int = logging.INFO, **fields: object) -> None:
     """Record one event. `fields` become keys of the JSON line (e.g. job_id=3)."""
+    job_id = _current_job.get()
+    if job_id is not None:
+        fields.setdefault("job_id", job_id)
     logging.getLogger(f"{ROOT}.events").log(level, name, extra={"fields": fields})
 
 

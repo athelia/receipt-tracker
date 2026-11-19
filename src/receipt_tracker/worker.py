@@ -23,7 +23,7 @@ from receipt_tracker.extractors import (
     ExtractionResult,
     Extractor,
 )
-from receipt_tracker.logging_setup import event, write_raw_failure
+from receipt_tracker.logging_setup import event, job_context, write_raw_failure
 
 
 class ApiError(Exception):
@@ -117,7 +117,7 @@ def run_once(
     )
     beat.start()
     try:
-        with tempfile.TemporaryDirectory() as folder:
+        with tempfile.TemporaryDirectory() as folder, job_context(job_id):
             photos = []
             for photo in job["photos"]:
                 suffix = Path(photo["original_filename"]).suffix

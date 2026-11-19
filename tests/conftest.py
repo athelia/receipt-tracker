@@ -1,4 +1,10 @@
+import json
+import logging
+
 import pytest
+
+from receipt_tracker import logging_setup
+from receipt_tracker.config import Settings
 
 
 def pytest_addoption(parser):
@@ -23,3 +29,20 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if item.get_closest_marker("model"):
             item.add_marker(skip)
+
+
+@pytest.fixture
+def settings(tmp_path):
+    return Settings(data_dir=tmp_path, _env_file=None)
+
+
+@pytest.fixture
+def log(settings):
+    """Route events to a file under tmp_path and return a reader for them."""
+    path = logging_setup.configure(settings, "test")
+    yield lambda: [json.loads(line) for line in path.read_text().splitlines()]
+    root = logging.getLogger(logging_setup.ROOT)
+    for handler in list(root.handlers):
+        if getattr(handler, logging_setup._HANDLER_MARK, False):
+            root.removeHandler(handler)
+            handler.close()
