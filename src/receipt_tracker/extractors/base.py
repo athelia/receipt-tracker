@@ -78,10 +78,13 @@ class ExtractedHeader:
     subtotal_cents: int | None = None
     total_cents: int | None = None
     payment_method: str | None = None
+    # The printed "you saved" figure, a cross-check on the line discounts.
+    savings_cents: int | None = None
     confidence: float | None = None
 
     def __post_init__(self) -> None:
         _check_int("subtotal_cents", self.subtotal_cents)
+        _check_int("savings_cents", self.savings_cents)
         _check_int("total_cents", self.total_cents)
         _check_confidence(self.confidence)
 

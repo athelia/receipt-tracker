@@ -19,6 +19,12 @@ make serve     # run the web app at http://127.0.0.1:8000
 make lock      # regenerate requirements*.txt after editing pyproject.toml
 ```
 
+Tests marked `model` call a real local vision model and are skipped by default. With Ollama running and the model pulled, run them (minutes per case on CPU) with:
+
+```bash
+.venv/bin/pytest tests/test_synthetic_model.py --run-model -v
+```
+
 The CLI is `.venv/bin/receipt-tracker`; run it with `--help` to list commands.
 
 ## Database

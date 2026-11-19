@@ -65,6 +65,7 @@ def test_result_requires_provenance():
 
 def test_receipt_round_trips_through_dict():
     receipt = FakeExtractor().receipt
+    receipt = ExtractedReceipt(ExtractedHeader(savings_cents=60), receipt.lines)
     assert ExtractedReceipt.from_dict(receipt.to_dict()) == receipt
 
 
