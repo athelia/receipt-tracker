@@ -45,10 +45,15 @@ class Settings(BaseSettings):
     # Also keep the raw model answer of failed extractions, in a separate file.
     # Off by default: the raw answer contains receipt text.
     log_raw_failures: bool = False
+    # Model evaluation: which photo shows which golden receipt, and where results are kept.
+    golden_manifest: Path = Path("data/photo_manifest.csv")
+    eval_dir: Path | None = None
     host: str = "127.0.0.1"
     port: int = 8000
 
     def model_post_init(self, __context: object) -> None:
+        if self.eval_dir is None:
+            self.eval_dir = self.data_dir / "eval"
         if self.db_path is None:
             self.db_path = self.data_dir / "receipt_tracker.db"
         if self.watch_dir is None:

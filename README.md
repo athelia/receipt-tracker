@@ -60,6 +60,8 @@ Settings come from environment variables prefixed `RECEIPT_TRACKER_`, or from a 
 | `VISION_MAX_ASPECT` | `4` | A receipt taller than this multiple of its width is sent to the model in overlapping tiles (slower, but more pixels per line); raise it to send tall receipts whole |
 | `VISION_PROGRESS_SECONDS` | `30` | While waiting for the model, log a "still waiting" line this often (0 turns it off) |
 | `LOG_DIR` | `<DATA_DIR>/logs` | Event logs: `app.log`, `cli.log`, `worker.log` (JSON lines) |
+| `GOLDEN_MANIFEST` | `data/photo_manifest.csv` | Which photo shows which golden receipt, for `evaluate` |
+| `EVAL_DIR` | `<DATA_DIR>/eval` | Stored evaluation runs (can contain receipt text) |
 | `LOG_LEVEL` | `INFO` | Minimum level written to the event log |
 | `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT` | `5000000`, `5` | Rotation size and number of old files kept |
 | `LOG_CONSOLE` | `false` | Also print each event as a readable line on stderr, to watch a run live |
@@ -107,6 +109,29 @@ Receipts entered by hand before this project live in a workbook under `data/`. L
 Drop `--dry-run` to save. The import creates stores, receipts, and line items, and seeds products, categories, and item codes from the workbook's lookup sheet. Receipts are marked as golden and already reviewed. It prints every row it cleaned up or could not map, and it is safe to run again: receipts already imported are skipped.
 
 The lookup sheet describes one store's item codes. That store is inferred as the one whose rows match the most lookup codes; pass `--lookup-store NAME` to choose it yourself.
+
+## Evaluating a model
+
+The harness reads every golden photo with a backend, scores the answer against the hand-entered receipts, and stores the result so settings can be compared run to run. It needs the golden workbook imported and `data/photo_manifest.csv`, which says which photo shows which receipt (`GOLDEN_MANIFEST` to use another file).
+
+```bash
+.venv/bin/receipt-tracker evaluate run ollama-vision --label baseline
+.venv/bin/receipt-tracker evaluate run ollama-vision --label no-crop --set vision_crop=false
+.venv/bin/receipt-tracker evaluate compare <run id> <run id>
+```
+
+`--store YDFM` limits a run to one store and `--limit 5` to the first few receipts. Any setting can be overridden for one run with `--set name=value`, and the `model_*` and `vision_*` settings are stored with the run. Each receipt is saved as it finishes, so a run that is stopped, or loses the model server, continues with `--resume <run id>` (the settings must match). A model run over all photos takes hours on CPU.
+
+Other commands: `evaluate list`, `evaluate show <run id>`, and `evaluate rescore <run id>`, which scores the stored answers again after the scoring rules change without calling the model. `compare` only counts receipts that every run covers.
+
+The report gives, per store and overall:
+
+- **Lines:** recall (truth lines found) and precision (extracted lines that are real), by price and by item code, plus character error rate on codes. Lines are matched in printed order, so repeated identical lines are not credited twice.
+- **Fields:** quantity, unit price and discount of matched lines; store, date and receipt number; character error rate on names.
+- **Consistency:** how often the lines add up to the printed subtotal, and the printed savings match the line discounts.
+- **Cost:** seconds per receipt and, with Ollama, GPU memory in use.
+
+The workbook has no subtotal, total, payment method or savings figure, so those are only used in the consistency checks, not scored against truth. Its item names are typed in, not copied from the receipt, so name error rate is a rough signal. Results are stored under `EVAL_DIR` (`<DATA_DIR>/eval`) and can contain receipt text, so they stay out of git.
 
 ## Household data
 

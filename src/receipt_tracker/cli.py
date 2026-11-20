@@ -6,11 +6,13 @@ import typer
 
 from receipt_tracker import __version__, logging_setup
 from receipt_tracker.config import get_settings
+from receipt_tracker.evaluation import cli as evaluation_cli
 
 app = typer.Typer(
     help="Receipt Tracker: ingest receipt photos and track item prices.",
     no_args_is_help=True,
 )
+app.add_typer(evaluation_cli.app, name="evaluate")
 
 
 @app.command()
