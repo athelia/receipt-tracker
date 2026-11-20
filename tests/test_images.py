@@ -130,3 +130,11 @@ def test_tiles_cover_every_row_whatever_the_height(height):
         top = offset_of(tile)
         covered.update(range(top, top + tile.height))
     assert covered == set(range(height))
+
+
+def test_a_higher_aspect_limit_keeps_a_tall_receipt_whole():
+    tall = row_coded(100, 600)  # six times as tall as wide
+    assert len(images.tiles(tall)) > 1  # the default limit is 4
+    assert len(images.tiles(tall, max_aspect=6.5)) == 1
+    pieces = images.tiles(tall, max_aspect=3)
+    assert all(piece.height <= 300 for piece in pieces)

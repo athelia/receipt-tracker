@@ -10,16 +10,20 @@ address is refused before any image is sent.
 """
 
 import base64
+import contextvars
 import io
 import ipaddress
 import json
 import logging
 import re
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -270,12 +274,18 @@ class OllamaVisionExtractor:
         timeout: float = 300.0,
         max_edge: int = 2240,
         num_ctx: int = 8192,
+        crop: bool = True,
+        progress_seconds: float = 30.0,
+        max_aspect: float = images.MAX_ASPECT,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
         self.max_edge = max_edge
         self.num_ctx = num_ctx
+        self.crop = crop
+        self.progress_seconds = progress_seconds
+        self.max_aspect = max_aspect
         self._version: str | None = None
         self.last_raw: str | None = None  # latest model answer, for debugging
 
@@ -318,7 +328,7 @@ class OllamaVisionExtractor:
                 raise BackendUnavailable(f"Model {self.model!r} is not installed (ollama pull it)")
         return self._version
 
-    def _ask(self, jpegs: list[bytes], attempt: int = 1) -> str:
+    def _ask(self, jpegs: list[bytes], attempt: int = 1, of: int = 1) -> str:
         body = {
             "model": self.model,
             "stream": False,
@@ -332,16 +342,30 @@ class OllamaVisionExtractor:
                 }
             ],
         }
+        sizes = [list(Image.open(io.BytesIO(jpeg)).size) for jpeg in jpegs]
+        kb = round(sum(len(jpeg) for jpeg in jpegs) / 1024)
+        event(
+            "model_call_started",
+            attempt=attempt,
+            of=of,
+            model=self.model,
+            images=len(jpegs),
+            image_sizes=sizes,
+            image_kb=kb,
+            num_ctx=self.num_ctx,
+            timeout_s=self.timeout,
+        )
         started = time.monotonic()
-        reply = self._call("POST", "/api/chat", body)
+        with self._ticker(attempt, started):
+            reply = self._call("POST", "/api/chat", body)
         content = (reply.get("message") or {}).get("content")
         event(
             "model_call",
             attempt=attempt,
             model=self.model,
             images=len(jpegs),
-            image_sizes=[list(Image.open(io.BytesIO(jpeg)).size) for jpeg in jpegs],
-            image_kb=round(sum(len(jpeg) for jpeg in jpegs) / 1024),
+            image_sizes=sizes,
+            image_kb=kb,
             num_ctx=self.num_ctx,
             duration_s=round(time.monotonic() - started, 2),
             ollama_total_s=_seconds(reply.get("total_duration")),
@@ -355,21 +379,83 @@ class OllamaVisionExtractor:
         self.last_raw = content
         return content
 
+    @contextmanager
+    def _ticker(self, attempt: int, started: float) -> Iterator[None]:
+        """While the model works, say so every `progress_seconds`, so a run is never silent."""
+        if self.progress_seconds <= 0:
+            yield
+            return
+        stop = threading.Event()
+
+        def tick() -> None:
+            while not stop.wait(self.progress_seconds):
+                event(
+                    "model_call_waiting",
+                    attempt=attempt,
+                    waited_s=round(time.monotonic() - started),
+                    timeout_s=self.timeout,
+                )
+
+        thread = threading.Thread(target=contextvars.copy_context().run, args=(tick,), daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join()
+
+    def _cropped(self, image: Image.Image) -> Image.Image:
+        """Cut the background away when the receipt can be found, and log what happened."""
+        if not self.crop:
+            return image
+        result = images.crop_to_receipt(image)
+        event(
+            "image_cropped" if result.box else "image_not_cropped",
+            reason=result.reason,
+            fraction=round(result.fraction, 2),
+            box=list(result.box) if result.box else None,
+            size=list(image.size),
+        )
+        return result.image
+
     def extract(self, photos: list[Path]) -> ExtractionResult:
         if not photos:
             raise ExtractionError("No photos to read")
         require_local(self.base_url)
         version = self.model_version()
-        variants = [list(images.orientations(images.load(photo))) for photo in photos]
+        event(
+            "extraction_started",
+            photos=len(photos),
+            model=self.model,
+            model_version=version,
+            crop=self.crop,
+            max_edge=self.max_edge,
+            num_ctx=self.num_ctx,
+        )
+        variants = []
+        for number, photo in enumerate(photos, 1):
+            options = list(images.orientations(images.load(photo)))
+            variants.append(options)
+            event("photo_loaded", photo=number, of=len(photos), size=list(options[0].size))
         last_error: ExtractionError | None = None
         last_answer: str | None = None
         attempts = max(len(v) for v in variants)
         for attempt in range(attempts):
             pieces = []
             for options in variants:
-                pieces.extend(images.tiles(options[min(attempt, len(options) - 1)]))
+                candidate = self._cropped(options[min(attempt, len(options) - 1)])
+                cut = images.tiles(candidate, self.max_aspect)
+                if len(cut) > 1:
+                    event(
+                        "image_tiled",
+                        pieces=len(cut),
+                        size=list(candidate.size),
+                        aspect=round(candidate.height / candidate.width, 2),
+                        max_aspect=self.max_aspect,
+                    )
+                pieces.extend(cut)
             jpegs = [images.to_jpeg(piece, self.max_edge) for piece in pieces]
-            content = last_answer = self._ask(jpegs, attempt + 1)
+            content = last_answer = self._ask(jpegs, attempt + 1, attempts)
             try:
                 receipt = parse_receipt(content)
             except ExtractionError as error:
@@ -379,6 +465,7 @@ class OllamaVisionExtractor:
                     level=logging.WARNING,
                     attempt=attempt + 1,
                     of=attempts,
+                    left=attempts - attempt - 1,
                     error=str(error),
                 )
                 continue
@@ -409,4 +496,7 @@ def build(settings: Settings) -> OllamaVisionExtractor:
         timeout=settings.model_timeout_seconds,
         max_edge=settings.vision_max_edge,
         num_ctx=settings.vision_num_ctx,
+        crop=settings.vision_crop,
+        progress_seconds=settings.vision_progress_seconds,
+        max_aspect=settings.vision_max_aspect,
     )

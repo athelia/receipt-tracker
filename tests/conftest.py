@@ -37,12 +37,18 @@ def settings(tmp_path):
 
 
 @pytest.fixture
-def log(settings):
-    """Route events to a file under tmp_path and return a reader for them."""
-    path = logging_setup.configure(settings, "test")
-    yield lambda: [json.loads(line) for line in path.read_text().splitlines()]
+def start_logging(settings):
+    """Call it to configure logging for the test; the handlers are removed afterwards."""
+    yield lambda **options: logging_setup.configure(settings, "test", **options)
     root = logging.getLogger(logging_setup.ROOT)
     for handler in list(root.handlers):
         if getattr(handler, logging_setup._HANDLER_MARK, False):
             root.removeHandler(handler)
             handler.close()
+
+
+@pytest.fixture
+def log(start_logging):
+    """Route events to a file under tmp_path and return a reader for them."""
+    path = start_logging()
+    return lambda: [json.loads(line) for line in path.read_text().splitlines()]

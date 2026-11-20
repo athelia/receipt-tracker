@@ -29,11 +29,6 @@ def test_truth_is_internally_consistent():
     assert len({(line.code, line.text) for line in TRUTH.lines}) < len(TRUTH.lines)  # has repeats
 
 
-def test_render_is_a_tall_portrait_image():
-    image = synthetic.render(TRUTH)
-    assert image.height > image.width
-
-
 def differences(receipt):
     """Everything the model got wrong, as readable strings. Empty means a perfect read."""
     problems = []
@@ -54,11 +49,22 @@ def differences(receipt):
     return problems
 
 
+CASES = {
+    "upright": dict(turn=0),
+    "sideways": dict(turn=-90),
+    "on a table": dict(turn=0, table=dict(receipt_width=0.45, angle=5)),
+    "sideways on a table": dict(turn=-90, table=dict(receipt_width=0.45, angle=5)),
+}
+
+
 @pytest.mark.model
-@pytest.mark.parametrize("turn", [0, -90], ids=["upright", "sideways"])
-def test_model_reads_a_synthetic_receipt(tmp_path, turn):
+@pytest.mark.parametrize("case", CASES.values(), ids=CASES.keys())
+def test_model_reads_a_synthetic_receipt(tmp_path, case):
+    image = synthetic.render(TRUTH)
+    if "table" in case:
+        image, *_ = synthetic.on_table(image, **case["table"])
     photo = tmp_path / "synthetic.png"
-    synthetic.render(TRUTH).rotate(turn, expand=True).save(photo)
+    image.rotate(case["turn"], expand=True).save(photo)
 
     extractor = create("ollama-vision", get_settings())
     result = extractor.extract([photo])

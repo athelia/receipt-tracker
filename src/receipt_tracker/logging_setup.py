@@ -13,6 +13,7 @@ written, to its own file, when `log_raw_failures` is enabled.
 import contextvars
 import json
 import logging
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -53,6 +54,23 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(entry, default=str)
 
 
+class ConsoleFormatter(logging.Formatter):
+    """One readable line per event, for watching a run: `21:03:07 ! name key=value ...`."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        stamp = datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
+        flag = "!" if record.levelno >= logging.WARNING else " "
+        fields = getattr(record, "fields", {})
+        detail = " ".join(f"{key}={_short(value)}" for key, value in fields.items())
+        return f"{stamp} {flag} {record.getMessage()} {detail}".rstrip()
+
+
+def _short(value: object) -> str:
+    text = json.dumps(value, separators=(",", ":"), default=str)
+    text = text[1:-1] if text.startswith('"') and text.endswith('"') else text
+    return text if len(text) <= 160 else text[:157] + "..."
+
+
 def event(name: str, *, level: int = logging.INFO, **fields: object) -> None:
     """Record one event. `fields` become keys of the JSON line (e.g. job_id=3)."""
     job_id = _current_job.get()
@@ -61,8 +79,12 @@ def event(name: str, *, level: int = logging.INFO, **fields: object) -> None:
     logging.getLogger(f"{ROOT}.events").log(level, name, extra={"fields": fields})
 
 
-def configure(settings: Settings, process: str) -> Path:
-    """Send this process's events to `<log_dir>/<process>.log`. Safe to call twice."""
+def configure(settings: Settings, process: str, console: bool | None = None) -> Path:
+    """Send this process's events to `<log_dir>/<process>.log`. Safe to call twice.
+
+    With `console` (default: the `log_console` setting) each event is also printed
+    as a readable line on stderr.
+    """
     assert settings.log_dir is not None
     settings.log_dir.mkdir(parents=True, exist_ok=True)
     path = settings.log_dir / f"{process}.log"
@@ -77,6 +99,11 @@ def configure(settings: Settings, process: str) -> Path:
     handler.setFormatter(JsonFormatter())
     setattr(handler, _HANDLER_MARK, True)
     root.addHandler(handler)
+    if settings.log_console if console is None else console:
+        live = logging.StreamHandler(sys.stderr)
+        live.setFormatter(ConsoleFormatter())
+        setattr(live, _HANDLER_MARK, True)
+        root.addHandler(live)
     root.setLevel(settings.log_level.upper())
     return path
 

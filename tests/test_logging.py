@@ -264,3 +264,22 @@ def test_extractor_events_get_the_job_id_without_knowing_it(env, log):
     worker.run_once(client, Chatty(), "w1")
     (entry,) = events(log, "model_call")
     assert entry["job_id"] == job_id
+
+
+# --- live console output ---------------------------------------------------------
+
+
+def test_console_output_is_one_readable_line_per_event(start_logging, capsys):
+    start_logging(console=True)
+    logging_setup.event("model_call_waiting", attempt=1, waited_s=60, timeout_s=900)
+    logging_setup.event("orientation_failed", level=logging.WARNING, error="bad json")
+    first, second = capsys.readouterr().err.splitlines()
+    assert first[2] == ":" and first[8] == " "  # a HH:MM:SS clock
+    assert "model_call_waiting attempt=1 waited_s=60 timeout_s=900" in first
+    assert "!" in second and "orientation_failed error=bad json" in second
+
+
+def test_console_output_is_off_unless_asked_for(start_logging, capsys):
+    start_logging()
+    logging_setup.event("quiet")
+    assert capsys.readouterr().err == ""

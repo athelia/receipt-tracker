@@ -1,11 +1,16 @@
+import base64
+import io
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 from PIL import Image
 from pillow_heif import register_heif_opener
 
+import synthetic
+from receipt_tracker import logging_setup
 from receipt_tracker.config import Settings
 from receipt_tracker.extractors import (
     BackendUnavailable,
@@ -47,13 +52,15 @@ GOOD = {
 class FakeOllama:
     """A real HTTP server on loopback that plays back scripted /api/chat answers."""
 
-    def __init__(self, answers, models=None, chat_status=200, stats=None):
+    def __init__(self, answers, models=None, chat_status=200, stats=None, delay=0.0, gate=None):
+        self.gate = gate  # when given, the answer is held until the test sets it
         self.answers = list(answers)
         self.models = (
             models if models is not None else [{"name": "vis:7b", "digest": "abcdef1234567890"}]
         )
         self.chat_status = chat_status
         self.stats = stats or {}
+        self.delay = delay
         self.requests = []
         outer = self
 
@@ -74,6 +81,10 @@ class FakeOllama:
             def do_POST(self):
                 length = int(self.headers["Content-Length"])
                 outer.requests.append(json.loads(self.rfile.read(length)))
+                if outer.gate:
+                    outer.gate.wait(10)
+                else:
+                    time.sleep(outer.delay)
                 if outer.chat_status != 200:
                     return self._send(outer.chat_status, {"error": "model 'vis:7b' not found"})
                 answer = outer.answers.pop(0)
@@ -227,12 +238,6 @@ def test_several_photos_go_in_one_request(serve, tmp_path):
     assert "consecutive parts" in server.requests[0]["messages"][0]["content"]
 
 
-def test_very_tall_photo_is_tiled(serve, tmp_path):
-    server = serve([GOOD])
-    extractor(server).extract([make_photo(tmp_path, (200, 1500))])
-    assert len(server.requests[0]["messages"][0]["images"]) > 1
-
-
 def test_heic_photo_is_decoded(tmp_path):
     path = tmp_path / "p.heic"
     Image.new("RGB", (64, 96), "white").save(path, format="HEIF")
@@ -278,9 +283,6 @@ def test_backend_is_registered_for_local_network_and_built_from_settings():
 
 
 def sent_images(server):
-    import base64
-    import io
-
     return [
         Image.open(io.BytesIO(base64.b64decode(data)))
         for request in server.requests
@@ -391,8 +393,11 @@ def test_a_failed_orientation_is_logged_before_the_retry_that_works(serve, tmp_p
     (failed,) = named(log, "orientation_failed")
     assert (failed["attempt"], failed["of"], failed["level"]) == (1, 2, "WARNING")
     assert "JSON" in failed["error"]
+    assert failed["left"] == 1  # one more orientation to try
     assert named(log, "orientation_used")[0]["attempt"] == 2
     assert [call["attempt"] for call in named(log, "model_call")] == [1, 2]
+    started = named(log, "model_call_started")
+    assert [(call["attempt"], call["of"]) for call in started] == [(1, 2), (2, 2)]
 
 
 def test_final_error_carries_the_last_raw_answer(serve, tmp_path):
@@ -407,3 +412,149 @@ def test_failed_portrait_extraction_also_carries_the_raw_answer(serve, tmp_path)
     with pytest.raises(ExtractionError) as caught:
         extractor(server).extract([make_photo(tmp_path, (200, 400))])
     assert caught.value.raw_output == "{not valid"
+
+
+# --- cropping to the receipt ---------------------------------------------------
+
+
+def table_photo(tmp_path, **options):
+    photo, *_ = synthetic.on_table(synthetic.render(synthetic.sample_truth()), **options)
+    path = tmp_path / "table.jpg"
+    photo.save(path, quality=95)
+    return path, photo
+
+
+def test_the_model_is_sent_the_cropped_receipt_not_the_whole_photo(serve, tmp_path, log):
+    path, photo = table_photo(tmp_path, receipt_width=0.4)
+    server = serve([GOOD])
+    extractor(server).extract([path])
+    (sent,) = sent_images(server)
+    assert sent.width * sent.height < photo.width * photo.height * 0.5
+
+    (cropped,) = named(log, "image_cropped")
+    assert cropped["reason"] == "cropped" and 0 < cropped["fraction"] < 0.5
+    assert cropped["size"] == [photo.width, photo.height] and len(cropped["box"]) == 4
+
+
+def test_cropping_can_be_turned_off(serve, tmp_path, log):
+    path, photo = table_photo(tmp_path, receipt_width=0.4)
+    server = serve([GOOD])
+    extractor(server, crop=False).extract([path])
+    (sent,) = sent_images(server)
+    assert sent.size == photo.size
+    assert named(log, "image_cropped") == [] and named(log, "image_not_cropped") == []
+
+
+def test_a_photo_with_no_findable_receipt_is_sent_whole_and_the_reason_is_logged(
+    serve, tmp_path, log
+):
+    server = serve([GOOD])
+    extractor(server).extract([make_photo(tmp_path, (300, 600))])  # plain white
+    (sent,) = sent_images(server)
+    assert sent.size == (300, 600)
+    (skipped,) = named(log, "image_not_cropped")
+    assert skipped["reason"] == "no text found" and skipped["box"] is None
+    assert skipped["fraction"] == 1.0
+
+
+# --- progress while the model runs ---------------------------------------------
+
+
+def test_a_run_says_what_it_is_doing_in_order(serve, tmp_path, log):
+    extractor(serve([GOOD])).extract([make_photo(tmp_path, (200, 400))])
+    steps = [entry["event"] for entry in log()]
+    assert steps == [
+        "extraction_started",
+        "photo_loaded",
+        "image_not_cropped",
+        "model_call_started",
+        "model_call",
+        "orientation_used",
+    ]
+    started = named(log, "extraction_started")[0]
+    assert (started["photos"], started["model"], started["crop"]) == (1, "vis:7b", True)
+    assert named(log, "photo_loaded")[0]["size"] == [200, 400]
+    call = named(log, "model_call_started")[0]
+    assert (call["attempt"], call["of"], call["images"], call["timeout_s"]) == (1, 1, 1, 5)
+
+
+def answer_after_waiting_lines(server, log, count=2):
+    """Hold the model's answer until `count` waiting lines are logged, then let it through.
+
+    The test waits on what it observes, not on a clock, so a slow machine cannot make it fail.
+    """
+
+    def release():
+        deadline = time.monotonic() + 5
+        while len(named(log, "model_call_waiting")) < count and time.monotonic() < deadline:
+            time.sleep(0.01)
+        server.gate.set()
+
+    threading.Thread(target=release, daemon=True).start()
+
+
+def test_a_waiting_line_is_logged_while_the_model_works_and_stops_when_it_answers(
+    serve, tmp_path, log
+):
+    server = serve([GOOD], gate=threading.Event())
+    answer_after_waiting_lines(server, log)
+    OllamaVisionExtractor(server.url, "vis:7b", timeout=8, progress_seconds=0.05).extract(
+        [make_photo(tmp_path, (200, 400))]
+    )
+    waiting = named(log, "model_call_waiting")
+    assert len(waiting) >= 2
+    assert [w["waited_s"] for w in waiting] == sorted(w["waited_s"] for w in waiting)
+    assert waiting[0]["attempt"] == 1 and waiting[0]["timeout_s"] == 8
+    order = [entry["event"] for entry in log()]
+    assert order.index("model_call_started") < order.index("model_call_waiting")
+    assert order.index("model_call_waiting") < order.index("model_call")
+    time.sleep(0.3)  # several ticks' worth; a ticker that outlived the answer would add lines
+    assert len(named(log, "model_call_waiting")) == len(waiting)
+
+
+def test_waiting_lines_carry_the_job_id_from_another_thread(serve, tmp_path, log):
+    server = serve([GOOD], gate=threading.Event())
+    answer_after_waiting_lines(server, log, count=1)
+    with logging_setup.job_context(77):
+        OllamaVisionExtractor(server.url, "vis:7b", timeout=8, progress_seconds=0.05).extract(
+            [make_photo(tmp_path, (200, 400))]
+        )
+    waiting = named(log, "model_call_waiting")
+    assert waiting and {entry["job_id"] for entry in waiting} == {77}
+
+
+def test_progress_lines_can_be_turned_off(serve, tmp_path, log):
+    server = serve([GOOD], delay=0.25)
+    OllamaVisionExtractor(server.url, "vis:7b", timeout=5, progress_seconds=0).extract(
+        [make_photo(tmp_path, (200, 400))]
+    )
+    assert named(log, "model_call_waiting") == []
+
+
+# --- tall receipts and tiling ----------------------------------------------------
+
+
+def test_a_tall_receipt_is_sent_in_tiles_and_the_log_says_why(serve, tmp_path, log):
+    server = serve([GOOD])
+    extractor(server).extract([make_photo(tmp_path, (300, 1500))])  # five times as tall as wide
+    assert len(sent_images(server)) > 1
+    (tiled,) = named(log, "image_tiled")
+    assert tiled["pieces"] == len(sent_images(server))
+    assert (tiled["size"], tiled["aspect"], tiled["max_aspect"]) == ([300, 1500], 5.0, 4.0)
+
+
+def test_raising_the_aspect_limit_sends_a_tall_receipt_whole(serve, tmp_path, log):
+    server = serve([GOOD])
+    extractor(server, max_aspect=6).extract([make_photo(tmp_path, (300, 1500))])
+    assert len(sent_images(server)) == 1
+    assert named(log, "image_tiled") == []
+
+
+@pytest.mark.parametrize(
+    ("setting", "attribute", "default", "changed"),
+    [("vision_crop", "crop", True, False), ("vision_max_aspect", "max_aspect", 4.0, 2.5)],
+)
+def test_image_settings_reach_the_backend(setting, attribute, default, changed):
+    assert getattr(create("ollama-vision", Settings(_env_file=None)), attribute) == default
+    built = create("ollama-vision", Settings(_env_file=None, **{setting: changed}))
+    assert getattr(built, attribute) == changed

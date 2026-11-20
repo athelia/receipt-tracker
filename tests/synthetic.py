@@ -9,7 +9,7 @@ a trailing tax flag.
 
 from dataclasses import dataclass, field
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 
 @dataclass(frozen=True)
@@ -99,3 +99,59 @@ def render(truth: Truth, *, width: int = 640, font_size: int = 22) -> Image.Imag
         if right:
             draw.text((width - pad - draw.textlength(right, font=font), y), right, "black", font)
     return image
+
+
+def on_table(
+    receipt: Image.Image,
+    *,
+    frame: tuple[int, int] = (1200, 1600),
+    receipt_width: float = 0.5,
+    centre: tuple[float, float] = (0.5, 0.5),
+    angle: float = 0.0,
+    table: int = 70,
+    lighting: int = 30,
+    noise: float = 8.0,
+) -> tuple[Image.Image, tuple[int, int, int, int], tuple[int, int, int, int]]:
+    """Paste the receipt onto a dark, noisy, unevenly lit background, like a photo.
+
+    Returns the photo, the box that tightly holds the paper, and the box that
+    tightly holds the printed text. A crop may trim empty paper but never the text.
+    """
+    width, height = frame
+    paper = receipt.convert("RGBA")
+    scale = width * receipt_width / paper.width
+    paper = paper.resize((round(paper.width * scale), round(paper.height * scale)))
+    if angle:
+        paper = paper.rotate(angle, expand=True, resample=Image.Resampling.BICUBIC)
+    left = round(width * centre[0] - paper.width / 2)
+    top = round(height * centre[1] - paper.height / 2)
+
+    ramp = Image.linear_gradient("L").resize((width, height))  # darker top, brighter bottom
+    shade = ramp.point(lambda value: table + lighting * value // 255)
+    shade = ImageChops.add(shade, Image.effect_noise((width, height), noise), offset=-128)
+    photo = shade.convert("RGB")
+    photo.paste(paper, (left, top), paper)
+    alpha = paper.getchannel("A")
+    ink = paper.convert("L").point(lambda value: 255 if value < 128 else 0)
+    ink = ImageChops.multiply(ink, alpha.point(lambda value: 255 if value > 200 else 0))
+    boxes = []
+    for mask in (alpha, ink):
+        bbox = mask.getbbox()
+        assert bbox is not None
+        boxes.append((left + bbox[0], top + bbox[1], left + bbox[2], top + bbox[3]))
+    return photo, boxes[0], boxes[1]
+
+
+def add_print(
+    photo: Image.Image, box: tuple[float, float, float, float], lines: int, size: int = 22
+) -> tuple[int, int, int, int]:
+    """Draw `lines` rows of dense text inside a box (as fractions of the photo): a stray label,
+    another receipt, a magazine. Returns the pixel box that holds it."""
+    font = ImageFont.load_default(size=size)
+    left, top = int(photo.width * box[0]), int(photo.height * box[1])
+    right, bottom = int(photo.width * box[2]), int(photo.height * box[3])
+    draw = ImageDraw.Draw(photo)
+    step = max(size + 4, (bottom - top) // max(1, lines))
+    for row in range(lines):
+        draw.text((left, top + row * step), "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789", "white", font)
+    return left, top, right, min(bottom, top + lines * step)
