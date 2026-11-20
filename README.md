@@ -52,9 +52,17 @@ Settings come from environment variables prefixed `RECEIPT_TRACKER_`, or from a 
 | `WATCH_INTERVAL_SECONDS` | `10` | How often `watch` scans the folder |
 | `WATCH_SETTLE_SECONDS` | `5` | How long a photo must sit unmodified before pickup |
 | `MODEL_SERVER_URL` | `http://localhost:11434` | Local model server (Ollama) |
+| `VISION_MODEL` | `qwen2.5vl:7b` | Ollama vision model used by the `ollama-vision` extractor |
+| `MODEL_TIMEOUT_SECONDS` | `300` | How long to wait for one model answer |
+| `VISION_MAX_EDGE` | `2240` | Longest edge, in pixels, of an image sent to the model |
+| `VISION_NUM_CTX` | `8192` | Model context size |
+| `VISION_CROP` | `true` | Cut the background away around the receipt before sending the photo; falls back to the whole photo when the receipt cannot be found |
+| `VISION_MAX_ASPECT` | `4` | A receipt taller than this multiple of its width is sent to the model in overlapping tiles (slower, but more pixels per line); raise it to send tall receipts whole |
+| `VISION_PROGRESS_SECONDS` | `30` | While waiting for the model, log a "still waiting" line this often (0 turns it off) |
 | `LOG_DIR` | `<DATA_DIR>/logs` | Event logs: `app.log`, `cli.log`, `worker.log` (JSON lines) |
 | `LOG_LEVEL` | `INFO` | Minimum level written to the event log |
 | `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT` | `5000000`, `5` | Rotation size and number of old files kept |
+| `LOG_CONSOLE` | `false` | Also print each event as a readable line on stderr, to watch a run live |
 | `LOG_RAW_FAILURES` | `false` | Also keep the raw model answer of failed extractions in `raw-failures.jsonl` (contains receipt text) |
 | `HOST`, `PORT` | `127.0.0.1`, `8000` | Web app bind address |
 
@@ -66,6 +74,8 @@ Each process writes its own JSON-lines file under `LOG_DIR`, one event per line 
 grep '"job_id": 12' var/logs/*.log
 grep '"extraction_failed"' var/logs/worker.log
 ```
+
+To watch a run live, set `LOG_CONSOLE=true`: every event is also printed as one line (`21:03:07   model_call_started attempt=1 of=2 ...`), with a `model_call_waiting` line every `VISION_PROGRESS_SECONDS` while the model works, so a slow run is never silent. Warnings are marked with `!`.
 
 Events include `job_enqueued`, `job_claimed`, `lease_expired`, `job_requeued`, `job_failed`, `job_completed`, and the worker's `extraction_finished`, `extraction_failed` (error type and message) and `extraction_unavailable`. The vision backend adds `model_call` (wall-clock and Ollama's own timing, load time, prompt and output token counts, image sizes, `num_ctx`) for every request, `orientation_failed` and `orientation_used` for the sideways-photo retries, and these carry the job's `job_id` like the rest. A requeue because the model server was unreachable is logged separately from a failure. Raw model output is never in these files; with `LOG_RAW_FAILURES=true` the model's last answer for a failed extraction goes to `raw-failures.jsonl` beside them. Logs stay on the machine and are not committed.
 

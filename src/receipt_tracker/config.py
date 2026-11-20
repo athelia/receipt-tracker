@@ -28,12 +28,20 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = 300.0
     vision_max_edge: int = 2240
     vision_num_ctx: int = 8192
+    # Cut the background away around the receipt before sending the photo to the model.
+    vision_crop: bool = True
+    # A receipt taller than this multiple of its width is cut into overlapping tiles.
+    vision_max_aspect: float = 4.0
+    # While waiting for the model, log a "still waiting" line this often (0 turns it off).
+    vision_progress_seconds: float = 30.0
     extractor: str | None = None  # backend name; see `receipt_tracker.extractors`
     # Structured event log (JSON lines), one rotating file per process.
     log_dir: Path | None = None
     log_level: str = "INFO"
     log_max_bytes: int = 5_000_000
     log_backup_count: int = 5
+    # Also print each event as a readable line on stderr, to watch a run live.
+    log_console: bool = False
     # Also keep the raw model answer of failed extractions, in a separate file.
     # Off by default: the raw answer contains receipt text.
     log_raw_failures: bool = False
